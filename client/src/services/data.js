@@ -55,22 +55,6 @@ export function onAuthChange(callback) {
   return () => { authListeners = authListeners.filter(fn => fn !== callback); };
 }
 
-export function notifyAuthChange(user) {
-  cachedUser = user;
-  authListeners.forEach(fn => fn(user));
-}
-
-// Verify a Firebase ID token (used if client has Firebase SDK, otherwise OAuth redirect)
-export async function verifyIdToken(idToken) {
-  const res = await apiFetch("/api/auth/verify-token", {
-    method: "POST",
-    body: JSON.stringify({ idToken }),
-  });
-  cachedUser = res.user;
-  authListeners.forEach(fn => fn(res.user));
-  return res.user;
-}
-
 function snapToArray(val) {
   if (!val) return [];
   return Object.entries(val).map(([id, data]) => ({ id, ...data }));
