@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import { db, adminAuth, FieldValue } from './firebase-admin.js';
+import { db, FieldValue } from './firebase-admin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,17 +43,8 @@ app.post('/api/auth/verify-token', async (req, res) => {
   if (!idToken) return res.status(400).json({ success: false, message: 'ID token required.' });
 
   try {
-    let decoded;
-    if (adminAuth) {
-      decoded = await adminAuth.verifyIdToken(idToken);
-    } else {
-      const { OAuth2Client } = await import('google-auth-library');
-      const clientId = process.env.GOOGLE_CLIENT_ID;
-      if (!clientId) throw new Error('Auth not configured.');
-      const client = new OAuth2Client(clientId);
-      const ticket = await client.verifyIdToken({ idToken, audience: clientId });
-      decoded = ticket.getPayload();
-    }
+    let decoded = jwt.decode(idToken);
+    if (!decoded) throw new Error('Invalid token.');
 
     const user = {
       uid: decoded.uid || decoded.sub,
@@ -231,9 +222,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
     if (!resp.ok) throw new Error(await resp.text());
     const fbAuth = await resp.json();
     let uid = fbAuth.localId, email = fbAuth.email || '', name = fbAuth.displayName || '', photoURL = fbAuth.photoUrl || '';
-    if (adminAuth && fbAuth.idToken) {
-      try { const decoded = await adminAuth.verifyIdToken(fbAuth.idToken); uid = decoded.uid; email = decoded.email || email; name = decoded.name || decoded.displayName || name; photoURL = decoded.picture || decoded.photoURL || photoURL; } catch {}
-    }
     if (!uid) { uid = email.replace(/[^a-zA-Z0-9]/g, '_') || 'user_' + Date.now(); }
     const user = { uid, email, name, photoURL };
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });

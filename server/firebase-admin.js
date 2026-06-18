@@ -1,6 +1,5 @@
 import { initializeApp, applicationDefault, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { getAuth } from 'firebase-admin/auth';
 
 function getServiceAccount() {
   const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -16,7 +15,6 @@ function getServiceAccount() {
 const sa = getServiceAccount();
 
 let db = null;
-let adminAuth = null;
 
 if (sa) {
   try {
@@ -24,10 +22,9 @@ if (sa) {
       credential: typeof sa === 'string' ? applicationDefault() : cert(sa),
     });
     db = getFirestore(app);
-    adminAuth = getAuth(app);
   } catch (err) {
     console.error('Firebase Admin init failed:', err.message);
   }
 }
 
-export { db, adminAuth, FieldValue };
+export { db, FieldValue };
