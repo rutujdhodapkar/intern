@@ -258,48 +258,48 @@ app.get('/api/payment-success', async (req, res) => {
 });
 
 // ─── Google OAuth Redirect Flow ──────────────────────────────────────────────
+const getCallbackUrl = () => {
+  const raw = process.env.GOOGLE_CALLBACK_URL || '';
+  if (!raw) return '';
+  const clean = raw.replace(/^https?:\/\//, '').replace(/\/api\/auth\/google\/callback\/?$/, '').replace(/\/+$/, '');
+  return `https://${clean}/api/auth/google/callback`;
+};
+
 app.get('/api/auth/google', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) return res.status(503).json({ success: false, message: 'Google OAuth not configured. Set GOOGLE_CLIENT_ID env var.' });
-  function getRedirectUri(req) {
-    const raw = process.env.GOOGLE_CALLBACK_URL || `${req.protocol}://${req.get('host')}`;
-    const withProto = raw.match(/^https?:\/\//) ? raw : `https://${raw}`;
-    return `${withProto.replace(/\/+$/, '')}/api/auth/google/callback`;
-  }
-  const redirectUri = getRedirectUri(req);
-  const state = crypto.randomBytes(16).toString('hex');
-  res.cookie('oauth_state', state, { httpOnly: true, secure: !!isVercel, sameSite: 'lax', maxAge: 600000 });
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${state}`;
+  if (!clientId) return res.status(503).json({ success: false, message: 'Google OAuth not configured.' });
+  const redirectUri = getCallbackUrl();
+  if (!redirectUri) return res.status(500).json({ success: false, message: 'GOOGLE_CALLBACK_URL not set.' });
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20profile%20email`;
+  console.log('[AUTH] Redirecting to Google OAuth, callback:', redirectUri);
   res.redirect(url);
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
-  const { code, state } = req.query;
-  const storedState = req.cookies?.oauth_state;
-  if (!state || state !== storedState) return res.status(401).send('Invalid state parameter.');
-  res.clearCookie('oauth_state');
-  if (!code) return res.status(401).send('No authorization code provided.');
+  const { code } = req.query;
+  if (!code) return res.status(400).send('No authorization code provided.');
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) return res.status(503).send('Google OAuth not configured.');
-  const redirectUri = getRedirectUri(req);
+  const redirectUri = getCallbackUrl();
   try {
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code' }),
     });
-    if (!tokenResponse.ok) throw new Error('Token exchange failed');
     const tokens = await tokenResponse.json();
+    if (!tokenResponse.ok) throw new Error(tokens.error_description || tokens.error || 'Token exchange failed');
     const idToken = tokens.id_token;
     if (!idToken) throw new Error('No ID token received');
     const decoded = jwt.decode(idToken);
-    const user = { uid: decoded.uid || decoded.sub, email: decoded.email || '', name: decoded.name || decoded.displayName || decoded.email?.split('@')[0] || 'User', photoURL: decoded.picture || decoded.photoURL || '' };
+    const user = { uid: decoded.sub, email: decoded.email || '', name: decoded.name || decoded.email?.split('@')[0] || 'User', photoURL: decoded.picture || '' };
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
-    res.cookie('token', token, { httpOnly: true, secure: !!isVercel, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
     res.redirect('/');
   } catch (err) {
-    res.status(500).send('Authentication failed: ' + err.message);
+    console.error('[AUTH] Callback error:', err.message);
+    res.redirect('/?auth_error=' + encodeURIComponent(err.message));
   }
 });
 
