@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import fs from 'fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
@@ -92,11 +92,11 @@ app.post('/api/auth/logout', (req, res) => {
 
 // ─── Async File Helpers ──────────────────────────────────────────────────────
 async function readJson(filePath, fallback = []) {
-  try { return JSON.parse(await fs.readFile(filePath, 'utf-8')); }
+  try { return JSON.parse(await readFile(filePath, 'utf-8')); }
   catch { return fallback; }
 }
 async function writeJson(filePath, data) {
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 // ─── Firestore helpers ───────────────────────────────────────────────────────
