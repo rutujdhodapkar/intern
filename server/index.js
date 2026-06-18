@@ -21,6 +21,7 @@ const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const isVercel = process.env.VERCEL;
 
+app.set('trust proxy', 1);
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json());
@@ -200,8 +201,12 @@ app.get('/api/inquiries', async (req, res) => { res.json({ success: true, data: 
 app.get('/api/auth/google', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) return res.status(503).json({ success: false, message: 'Google OAuth not configured. Set GOOGLE_CLIENT_ID env var.' });
-  const baseUrl = process.env.GOOGLE_CALLBACK_URL || `${req.protocol}://${req.get('host')}`;
-  const redirectUri = `${baseUrl.replace(/\/+$/, '')}/api/auth/google/callback`;
+  function getRedirectUri(req) {
+    const raw = process.env.GOOGLE_CALLBACK_URL || `${req.protocol}://${req.get('host')}`;
+    const withProto = raw.match(/^https?:\/\//) ? raw : `https://${raw}`;
+    return `${withProto.replace(/\/+$/, '')}/api/auth/google/callback`;
+  }
+  const redirectUri = getRedirectUri(req);
   const state = crypto.randomBytes(16).toString('hex');
   res.cookie('oauth_state', state, { httpOnly: true, secure: !!isVercel, sameSite: 'lax', maxAge: 600000 });
   const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${state}`;
@@ -217,8 +222,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) return res.status(503).send('Google OAuth not configured.');
-  const baseUrl = process.env.GOOGLE_CALLBACK_URL || `${req.protocol}://${req.get('host')}`;
-  const redirectUri = `${baseUrl.replace(/\/+$/, '')}/api/auth/google/callback`;
+  const redirectUri = getRedirectUri(req);
   try {
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
