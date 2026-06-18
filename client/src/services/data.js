@@ -439,9 +439,14 @@ export async function isReferralCodeMatched(referralCode) {
   } catch { return false; }
 }
 
-// ─── Payments ────────────────────────────────────
-export const PAYMENT_QR_DEFAULT = "https://raw.githubusercontent.com/rutujdhodapkar/Image-Hosting/main/GooglePay_QR.png";
-export const PAYMENT_QR_REFERRAL = "https://raw.githubusercontent.com/rutujdhodapkar/Image-Hosting/main/GooglePay_QR(1).png";
+// ─── Stripe Payments ─────────────────────────────────
+export async function createCheckoutSession(enrollmentId, domain, isReferred) {
+  const res = await apiFetch("/api/create-checkout-session", {
+    method: "POST",
+    body: JSON.stringify({ enrollmentId, domain, isReferred }),
+  });
+  return res.data || res;
+}
 
 // ─── Referral / Enrollment Deletion ──────────────────
 export async function deleteReferral(code) {
@@ -766,7 +771,7 @@ export async function fetchAdminMessages(userEmail) {
 
 export async function fetchAllAdminMessages() {
   try {
-    const res = await apiFetch("/api/all-admin-messages");
+    const res = await apiFetch("/api/admin-messages/all");
     return res.data || [];
   } catch { return []; }
 }

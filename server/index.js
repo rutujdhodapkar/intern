@@ -6,7 +6,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import { db, FieldValue } from './firebase-admin.js';
+import Stripe from 'stripe';
+import { db, FieldValue, initFirebase } from './firebase-admin.js';
+
+initFirebase();
+
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -195,7 +200,62 @@ app.post('/api/inquire', async (req, res) => {
   try { const inquiries = await readJson(INQUIRIES_FILE); inquiries.push(newInquiry); await writeJson(INQUIRIES_FILE, inquiries); return res.status(201).json({ success: true, message: 'Inquiry received!', inquiryId: newInquiry.id }); }
   catch (error) { return res.status(500).json({ success: false, message: 'Internal server error.' }); }
 });
-app.get('/api/inquiries', async (req, res) => { res.json({ success: true, data: await readJson(INQUIRIES_FILE) }); });
+app.get('/api/inquiries', authenticateToken, async (req, res) => { res.json({ success: true, data: await readJson(INQUIRIES_FILE) }); });
+
+// ─── Stripe Payment ──────────────────────────────────────────────────────────
+async function getPaymentAmounts(domain, isReferred) {
+  const defaultAmount = 200;
+  const referredAmount = 170;
+  if (!firestoreAvailable()) return { defaultAmount, referredAmount };
+  try {
+    const doc = await db.collection('siteSettings').doc('payment').get();
+    if (doc.exists) {
+      const data = doc.data();
+      const dflt = data.domainOverrides?.[domain]?.defaultAmount || data.defaultAmount || defaultAmount;
+      const ref = data.domainOverrides?.[domain]?.referredAmount || data.referredAmount || referredAmount;
+      return { defaultAmount: dflt, referredAmount: ref };
+    }
+  } catch {}
+  return { defaultAmount, referredAmount };
+}
+
+app.post('/api/create-checkout-session', authenticateToken, async (req, res) => {
+  if (!stripe) return res.status(503).json({ success: false, message: 'Stripe not configured. Set STRIPE_SECRET_KEY env var.' });
+  const { enrollmentId, domain, isReferred } = req.body;
+  if (!enrollmentId) return res.status(400).json({ success: false, message: 'Enrollment ID required.' });
+  const amounts = await getPaymentAmounts(domain, isReferred);
+  const amount = isReferred ? amounts.referredAmount : amounts.defaultAmount;
+  if (!amount || amount <= 0) return res.status(400).json({ success: false, message: 'Invalid payment amount.' });
+  const baseUrl = process.env.GOOGLE_CALLBACK_URL ? `https://${process.env.GOOGLE_CALLBACK_URL.replace(/^https?:\/\//, '').replace(/\/+$/, '')}` : `${req.protocol}://${req.get('host')}`;
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'link', 'upi'],
+      line_items: [{ price_data: { currency: 'inr', product_data: { name: `Internship Certificate - ${domain || 'Internship'}`, description: `Certificate unlock fee${isReferred ? ' (referred intern)' : ''}` }, unit_amount: amount * 100 }, quantity: 1 }],
+      mode: 'payment',
+      success_url: `${baseUrl}/api/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/?payment=cancel`,
+      metadata: { enrollmentId },
+      customer_email: req.user?.email || undefined,
+    });
+    res.json({ success: true, url: session.url, sessionId: session.id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to create checkout session: ' + err.message });
+  }
+});
+
+app.get('/api/payment-success', async (req, res) => {
+  const { session_id } = req.query;
+  if (!session_id || !stripe) return res.redirect('/?payment=failed');
+  try {
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+    if (session.payment_status === 'paid' && session.metadata?.enrollmentId) {
+      await setDocument('enrollments', session.metadata.enrollmentId, { paymentStatus: 'paid', paymentAmount: session.amount_total / 100, paidAt: new Date().toISOString(), stripeSessionId: session_id, updatedAt: new Date().toISOString() });
+    }
+    res.redirect('/?payment=success');
+  } catch {
+    res.redirect('/?payment=failed');
+  }
+});
 
 // ─── Google OAuth Redirect Flow ──────────────────────────────────────────────
 app.get('/api/auth/google', (req, res) => {
@@ -535,7 +595,7 @@ app.get('/api/admin-messages', async (req, res) => {
   const filtered = items.filter(msg => { if (msg.expiresAt && new Date(msg.expiresAt) < now) return false; if (msg.target === 'all') return true; if (email && msg.target?.toLowerCase() === email.toLowerCase()) return true; return false; }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   res.json({ success: true, data: filtered });
 });
-app.get('/api/all-admin-messages', async (req, res) => {
+app.get('/api/admin-messages/all', async (req, res) => {
   if (!firestoreAvailable()) return res.json({ success: true, data: [] });
   const items = await getCollection('adminMessages');
   items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -642,4 +702,5 @@ if (!isVercel) {
   });
 }
 
+export { initFirebase };
 export default app;

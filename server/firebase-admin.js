@@ -1,6 +1,3 @@
-import { initializeApp, applicationDefault, cert } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-
 function getServiceAccount() {
   const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (saJson) {
@@ -12,19 +9,28 @@ function getServiceAccount() {
   return null;
 }
 
-const sa = getServiceAccount();
-
 let db = null;
+let FieldValue = null;
+let initPromise = null;
 
-if (sa) {
-  try {
-    const app = initializeApp({
-      credential: typeof sa === 'string' ? applicationDefault() : cert(sa),
-    });
-    db = getFirestore(app);
-  } catch (err) {
-    console.error('Firebase Admin init failed:', err.message);
-  }
+async function initFirebase() {
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    const sa = getServiceAccount();
+    if (!sa) return;
+    try {
+      const { initializeApp, applicationDefault, cert } = await import('firebase-admin/app');
+      const { getFirestore, FieldValue: FV } = await import('firebase-admin/firestore');
+      FieldValue = FV;
+      const app = initializeApp({
+        credential: typeof sa === 'string' ? applicationDefault() : cert(sa),
+      });
+      db = getFirestore(app);
+    } catch (err) {
+      console.error('Firebase Admin init failed:', err.message);
+    }
+  })();
+  return initPromise;
 }
 
-export { db, FieldValue };
+export { db, FieldValue, initFirebase };

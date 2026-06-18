@@ -5,12 +5,10 @@ import {
   submitProject,
   fetchEnrollmentById,
   fetchCareerPaths,
-  submitTransactionId,
   isReferralCodeMatched,
   fetchUserReferralStat,
   fetchReferralDashboardData,
-  PAYMENT_QR_DEFAULT,
-  PAYMENT_QR_REFERRAL,
+  createCheckoutSession,
 } from "../services/data";
 import { openCertificatePdf } from "../utils/certificatePdf";
 import EarnSection from "./EarnSection";
@@ -50,37 +48,39 @@ export default function StudentDashboard({
   const [submitting, setSubmitting] = useState({}); // { [key]: bool }
   const [submitSuccess, setSubmitSuccess] = useState({}); // { [key]: bool } — show notice
 
-  // Payment Transaction ID state
-  const [txnInputs, setTxnInputs] = useState({});
-  const [txnSubmitting, setTxnSubmitting] = useState({});
   const [referralMatchedMap, setReferralMatchedMap] = useState({});
+  const [processingPayment, setProcessingPayment] = useState({});
 
   const [activeTab, setActiveTab] = useState("internships");
   const [referralStat, setReferralStat] = useState(null);
   const [referralDashData, setReferralDashData] = useState(null);
   const [referralDashLoading, setReferralDashLoading] = useState(false);
 
-  const handleSubmitTransactionId = async (enrollmentId) => {
-    const txnId = (txnInputs[enrollmentId] || "").trim();
-    if (!txnId) {
-      alert("Please enter your payment Transaction ID before submitting.");
-      return;
-    }
-    setTxnSubmitting((prev) => ({ ...prev, [enrollmentId]: true }));
+  const handleStripePayment = async (enrollmentId, domain, hasReferral) => {
+    setProcessingPayment((prev) => ({ ...prev, [enrollmentId]: true }));
     try {
-      await submitTransactionId(enrollmentId, txnId);
-      await refreshEnrollment(enrollmentId);
-      alert("Transaction ID submitted successfully!");
+      const res = await createCheckoutSession(enrollmentId, domain, hasReferral);
+      if (res.url) window.location.href = res.url;
+      else alert("Failed to create payment session.");
     } catch (err) {
-      alert("Failed to submit Transaction ID: " + err.message);
+      alert("Payment failed: " + err.message);
     } finally {
-      setTxnSubmitting((prev) => ({ ...prev, [enrollmentId]: false }));
+      setProcessingPayment((prev) => ({ ...prev, [enrollmentId]: false }));
     }
   };
 
   useEffect(() => {
     if (user) {
       loadAll();
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('payment') === 'success') {
+        alert('Payment successful! Your certificate will be enabled after admin verification.');
+        window.history.replaceState({}, '', window.location.pathname);
+        loadAll();
+      } else if (params.get('payment') === 'cancel') {
+        alert('Payment was cancelled. You can try again when ready.');
+        window.history.replaceState({}, '', window.location.pathname);
+      }
     }
   }, [user]);
 
@@ -1039,15 +1039,8 @@ export default function StudentDashboard({
                     onSubmitProject={handleSubmitProject}
                     onDownloadOffer={handleDownloadOffer}
                     onDownloadCertificate={handleDownloadCertificate}
-                    txnInput={txnInputs[enrollment.id] || ""}
-                    onTxnInputChange={(val) =>
-                      setTxnInputs((prev) => ({
-                        ...prev,
-                        [enrollment.id]: val,
-                      }))
-                    }
-                    txnSubmitting={txnSubmitting[enrollment.id] || false}
-                    onSubmitTxn={() => handleSubmitTransactionId(enrollment.id)}
+                    processingPay={processingPayment[enrollment.id] || false}
+                    onStripePayment={() => handleStripePayment(enrollment.id, enrollment.domain, !!referralMatchedMap[enrollment.id])}
                     hasMatchedReferral={!!referralMatchedMap[enrollment.id]}
                     showBackButton={enrollments.length > 1}
                     onBackClick={() => setSelectedEnrollment(null)}
@@ -1076,10 +1069,8 @@ function EnrollmentCard({
   onSubmitProject,
   onDownloadOffer,
   onDownloadCertificate,
-  txnInput,
-  onTxnInputChange,
-  txnSubmitting,
-  onSubmitTxn,
+  processingPay,
+  onStripePayment,
   hasMatchedReferral,
   showBackButton,
   onBackClick,
@@ -1090,9 +1081,11 @@ function EnrollmentCard({
   const submittedCount = projects.filter(
     (_, idx) => submissions[idx]?.submittedAt,
   ).length;
-  const paymentQrUrl = hasMatchedReferral
-    ? PAYMENT_QR_REFERRAL
-    : PAYMENT_QR_DEFAULT;
+  const [paymentAmounts, setPaymentAmounts] = useState({ defaultAmount: 200, referredAmount: 170 });
+
+  useEffect(() => {
+    fetch('/api/site-settings/payment').then(r => r.json()).then(d => { if (d.data) setPaymentAmounts(d.data); }).catch(() => {});
+  }, []);
 
   return (
     <div>
@@ -1484,7 +1477,7 @@ function EnrollmentCard({
                       Unlock Completion Certificate
                     </h5>
 
-                    {enrollment.transactionId ? (
+                    {enrollment.paymentStatus === 'paid' ? (
                       <div
                         style={{
                           display: "flex",
@@ -1493,21 +1486,20 @@ function EnrollmentCard({
                         }}
                       >
                         <div style={{ fontSize: "0.85rem", color: "#333" }}>
-                          <strong>Transaction ID Submitted:</strong>{" "}
-                          <code>{enrollment.transactionId}</code>
+                          <strong>Payment Completed</strong>
                         </div>
                         <div
                           style={{
                             padding: "0.75rem 1rem",
-                            background: "#fffbea",
-                            borderLeft: "4px solid #FBBC05",
+                            background: "#e8f5e9",
+                            borderLeft: "4px solid #4CAF50",
                             fontSize: "0.82rem",
-                            color: "#7a6000",
+                            color: "#2e7d32",
                           }}
                         >
-                          ⏳ <strong>Pending Admin Review:</strong> Our team is
-                          verifying your payment. Once approved, your
-                          certificate download will be enabled here instantly.
+                          ✅ <strong>Payment Verified:</strong> Your payment
+                          has been received. Our team will review and enable
+                          your certificate download shortly.
                         </div>
                       </div>
                     ) : (
@@ -1520,85 +1512,54 @@ function EnrollmentCard({
                             lineHeight: "1.5",
                           }}
                         >
-                          To download your official Internship Completion
-                          Certificate, please scan the QR code below using
-                          Google Pay to complete the verification payment, then
-                          enter the payment Transaction ID to submit for
-                          approval.
+                          To unlock your Internship Completion Certificate,
+                          complete the payment via credit/debit card, UPI, or
+                          other payment methods. The certificate will be
+                          enabled after admin verification.
                         </p>
-                        <div style={{ marginBottom: "1.25rem" }}>
-                          <img
-                            src={paymentQrUrl}
-                            alt="Google Pay QR Code"
-                            style={{
-                              width: "220px",
-                              border: "2px solid #000",
-                              display: "block",
-                            }}
-                          />
-                        </div>
                         <div
                           style={{
-                            display: "flex",
-                            gap: "0.5rem",
-                            flexWrap: "wrap",
-                            alignItems: "flex-end",
-                            maxWidth: "450px",
+                            background: "#f8f8f8",
+                            border: "2px solid #000",
+                            padding: "1rem",
+                            marginBottom: "1rem",
+                            display: "inline-block",
                           }}
                         >
-                          <div style={{ flex: 1, minWidth: "200px" }}>
-                            <label
-                              style={{
-                                fontSize: "0.72rem",
-                                fontWeight: 700,
-                                textTransform: "uppercase",
-                                display: "block",
-                                marginBottom: "0.25rem",
-                                color: "#333",
-                              }}
-                            >
-                              Transaction ID *
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="Enter 12-digit UPI / Transaction ID"
-                              value={txnInput}
-                              onChange={(e) => onTxnInputChange(e.target.value)}
-                              style={{
-                                width: "100%",
-                                padding: "0.55rem 0.75rem",
-                                border: "2px solid #000",
-                                fontSize: "0.88rem",
-                                outline: "none",
-                                fontFamily: "inherit",
-                                boxSizing: "border-box",
-                              }}
-                            />
+                          <div style={{ fontSize: "0.78rem", color: "#666", marginBottom: "0.25rem" }}>Certificate Fee</div>
+                          <div style={{ fontSize: "1.5rem", fontWeight: 900 }}>
+                            ₹{paymentAmounts?.defaultAmount || 200}
+                            {hasMatchedReferral && (
+                              <span style={{ fontSize: "0.85rem", fontWeight: 400, color: "#888", marginLeft: "0.5rem" }}>
+                                <s>₹{paymentAmounts?.defaultAmount || 200}</s> → ₹{paymentAmounts?.referredAmount || 170} (referred)
+                              </span>
+                            )}
                           </div>
-                          <button
-                            onClick={onSubmitTxn}
-                            disabled={txnSubmitting || !txnInput.trim()}
-                            className="btn-sharp"
-                            style={{
-                              padding: "0.55rem 1.25rem",
-                              fontSize: "0.85rem",
-                              height: "37px",
-                              opacity: !txnInput.trim() ? 0.5 : 1,
-                              borderRadius: 0,
-                            }}
-                          >
-                            {txnSubmitting ? "Submitting…" : "Submit ID"}
-                          </button>
                         </div>
+                        <button
+                          onClick={onStripePayment}
+                          disabled={processingPay}
+                          style={{
+                            padding: "0.75rem 2rem",
+                            fontSize: "1rem",
+                            fontWeight: 800,
+                            background: processingPay ? "#ccc" : "#6772E5",
+                            color: "#fff",
+                            border: "none",
+                            cursor: processingPay ? "not-allowed" : "pointer",
+                            borderRadius: "6px",
+                          }}
+                        >
+                          {processingPay ? "Redirecting to Payment…" : `Pay ₹${paymentAmounts?.defaultAmount || 200} with Card / UPI`}
+                        </button>
                         <p
                           style={{
                             fontSize: "0.72rem",
                             color: "#777",
-                            marginTop: "0.5rem",
+                            marginTop: "0.75rem",
                           }}
                         >
-                          * Required to unlock download certificate. You cannot
-                          move forward without entering this.
+                          Secure payment powered by Stripe. We accept credit/debit cards and UPI.
                         </p>
                       </div>
                     )}

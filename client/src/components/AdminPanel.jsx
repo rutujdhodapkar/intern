@@ -58,6 +58,7 @@ const TABS = [
   { id: "referral users", label: "Referral Users" },
   { id: "verify-ai", label: "Verify with AI" },
   { id: "earn-settings", label: "Earn Settings" },
+  { id: "payment-settings", label: "Payment" },
   { id: "banned-users", label: "Banned Users" },
   { id: "messages", label: "Messages" },
   { id: "manage admins", label: "Admins" },
@@ -4278,6 +4279,16 @@ export default function AdminPanel({ onClose, user, onLogout }) {
           </div>
         )}
 
+        {/* ── Payment Settings ── */}
+        {activeTab === "payment-settings" && (
+          <div style={{ padding: "1rem 0" }}>
+            <h3 style={{ fontWeight: 900, fontSize: "1.1rem", marginBottom: "1.5rem", textTransform: "uppercase" }}>
+              Payment Settings
+            </h3>
+            <PaymentSettingsPanel />
+          </div>
+        )}
+
         {/* ── Earn Settings ── */}
         {activeTab === "earn-settings" && (
           <div style={{ maxWidth: "600px" }}>
@@ -6306,4 +6317,71 @@ function formatCell(value) {
     return Array.isArray(value) ? value.join(", ") : JSON.stringify(value);
   }
   return String(value);
+}
+
+function PaymentSettingsPanel() {
+  const [settings, setSettings] = React.useState({ defaultAmount: 200, referredAmount: 170, domainOverrides: {} });
+  const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [newDomain, setNewDomain] = React.useState("");
+  const [newDefaultAmt, setNewDefaultAmt] = React.useState("");
+  const [newReferredAmt, setNewReferredAmt] = React.useState("");
+
+  React.useEffect(() => {
+    fetch('/api/site-settings/payment').then(r => r.json()).then(d => { if (d.data) setSettings(d.data); }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try { await fetch('/api/site-settings/payment', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }); alert('Payment settings saved!'); }
+    catch (e) { alert('Failed to save: ' + e.message); }
+    finally { setSaving(false); }
+  };
+
+  const addDomainOverride = () => {
+    if (!newDomain.trim()) return;
+    setSettings(prev => ({ ...prev, domainOverrides: { ...prev.domainOverrides, [newDomain.trim()]: { defaultAmount: Number(newDefaultAmt) || 200, referredAmount: Number(newReferredAmt) || 170 } } }));
+    setNewDomain(""); setNewDefaultAmt(""); setNewReferredAmt("");
+  };
+
+  const removeDomain = (domain) => {
+    const rest = { ...settings.domainOverrides };
+    delete rest[domain];
+    setSettings(prev => ({ ...prev, domainOverrides: rest }));
+  };
+
+  if (loading) return <div style={{ padding: "2rem", color: "#888" }}>Loading…</div>;
+
+  return (
+    <div style={{ maxWidth: "600px" }}>
+      <div style={{ marginBottom: "1.5rem", padding: "1rem", border: "2px solid #000" }}>
+        <label style={{ fontWeight: 700, fontSize: "0.82rem", display: "block", marginBottom: "0.3rem" }}>Default Amount (₹)</label>
+        <input type="number" value={settings.defaultAmount} onChange={e => setSettings(p => ({ ...p, defaultAmount: Number(e.target.value) }))} style={{ width: "100%", padding: "0.5rem", border: "2px solid #000", fontSize: "0.9rem", marginBottom: "1rem", boxSizing: "border-box" }} />
+        <label style={{ fontWeight: 700, fontSize: "0.82rem", display: "block", marginBottom: "0.3rem" }}>Referred Intern Amount (₹)</label>
+        <input type="number" value={settings.referredAmount} onChange={e => setSettings(p => ({ ...p, referredAmount: Number(e.target.value) }))} style={{ width: "100%", padding: "0.5rem", border: "2px solid #000", fontSize: "0.9rem", boxSizing: "border-box" }} />
+      </div>
+
+      <div style={{ marginBottom: "1.5rem" }}>
+        <h4 style={{ fontWeight: 800, fontSize: "0.9rem", marginBottom: "0.75rem" }}>Per-Domain Overrides</h4>
+        {Object.entries(settings.domainOverrides || {}).map(([domain, amts]) => (
+          <div key={domain} style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem", padding: "0.5rem", border: "1px solid #ddd" }}>
+            <span style={{ fontWeight: 700, minWidth: "120px" }}>{domain}</span>
+            <span>Default: ₹{amts.defaultAmount}</span>
+            <span>Referred: ₹{amts.referredAmount}</span>
+            <button onClick={() => removeDomain(domain)} style={{ marginLeft: "auto", background: "#e00", color: "#fff", border: "none", padding: "0.25rem 0.5rem", cursor: "pointer" }}>Remove</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+          <input placeholder="Domain name" value={newDomain} onChange={e => setNewDomain(e.target.value)} style={{ padding: "0.4rem", border: "2px solid #000", fontSize: "0.85rem" }} />
+          <input placeholder="Default ₹" type="number" value={newDefaultAmt} onChange={e => setNewDefaultAmt(e.target.value)} style={{ width: "90px", padding: "0.4rem", border: "2px solid #000", fontSize: "0.85rem" }} />
+          <input placeholder="Referred ₹" type="number" value={newReferredAmt} onChange={e => setNewReferredAmt(e.target.value)} style={{ width: "90px", padding: "0.4rem", border: "2px solid #000", fontSize: "0.85rem" }} />
+          <button onClick={addDomainOverride} className="btn-sharp" style={{ padding: "0.4rem 0.75rem" }}>Add Domain</button>
+        </div>
+      </div>
+
+      <button onClick={handleSave} disabled={saving} className="btn-sharp" style={{ padding: "0.6rem 1.5rem", fontWeight: 800, background: "#000", color: "#fff", border: "none", cursor: "pointer" }}>
+        {saving ? "Saving…" : "Save Settings"}
+      </button>
+    </div>
+  );
 }

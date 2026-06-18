@@ -2,8 +2,9 @@ import express from 'express';
 
 let app;
 
-const ready = import('../server/index.js').then(m => {
+const ready = import('../server/index.js').then(async (m) => {
   app = m.default;
+  if (m.initFirebase) await m.initFirebase();
 }).catch(err => {
   console.error('Server init error:', err.message);
   app = express();
