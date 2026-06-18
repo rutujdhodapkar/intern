@@ -43,8 +43,17 @@ app.post('/api/auth/verify-token', async (req, res) => {
   if (!idToken) return res.status(400).json({ success: false, message: 'ID token required.' });
 
   try {
-    let decoded = jwt.decode(idToken);
-    if (!decoded) throw new Error('Invalid token.');
+    let decoded;
+    const { OAuth2Client } = await import('google-auth-library');
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (clientId) {
+      const client = new OAuth2Client(clientId);
+      const ticket = await client.verifyIdToken({ idToken, audience: clientId });
+      decoded = ticket.getPayload();
+    } else {
+      decoded = jwt.decode(idToken);
+      if (!decoded) throw new Error('Invalid token.');
+    }
 
     const user = {
       uid: decoded.uid || decoded.sub,
@@ -187,43 +196,41 @@ app.post('/api/inquire', async (req, res) => {
 });
 app.get('/api/inquiries', async (req, res) => { res.json({ success: true, data: await readJson(INQUIRIES_FILE) }); });
 
-// ─── Google OAuth via Firebase Auth REST API ─────────────────────────────────
-const FIREBASE_API_KEY = process.env.FIREBASE_WEB_API_KEY || process.env.VITE_FIREBASE_API_KEY;
-
-app.get('/api/auth/google', async (req, res) => {
-  if (!FIREBASE_API_KEY) return res.status(503).json({ success: false, message: 'Firebase Auth not configured. Set FIREBASE_WEB_API_KEY env var.' });
-  const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
-  try {
-    const resp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${FIREBASE_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerId: 'google.com', continueUri: redirectUri }),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    const data = await resp.json();
-    res.cookie('sessionId', data.sessionId, { httpOnly: true, secure: !!isVercel, sameSite: 'lax', maxAge: 600000 });
-    res.redirect(data.authUri);
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to create auth URI: ' + err.message });
-  }
+// ─── Google OAuth Redirect Flow ──────────────────────────────────────────────
+app.get('/api/auth/google', (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) return res.status(503).json({ success: false, message: 'Google OAuth not configured. Set GOOGLE_CLIENT_ID env var.' });
+  const baseUrl = process.env.GOOGLE_CALLBACK_URL || `${req.protocol}://${req.get('host')}`;
+  const redirectUri = `${baseUrl.replace(/\/+$/, '')}/api/auth/google/callback`;
+  const state = crypto.randomBytes(16).toString('hex');
+  res.cookie('oauth_state', state, { httpOnly: true, secure: !!isVercel, sameSite: 'lax', maxAge: 600000 });
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20profile%20email&access_type=offline&state=${state}`;
+  res.redirect(url);
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, state } = req.query;
+  const storedState = req.cookies?.oauth_state;
+  if (!state || state !== storedState) return res.status(401).send('Invalid state parameter.');
+  res.clearCookie('oauth_state');
   if (!code) return res.status(401).send('No authorization code provided.');
-  if (!FIREBASE_API_KEY) return res.status(503).send('Firebase Auth not configured.');
-  const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return res.status(503).send('Google OAuth not configured.');
+  const baseUrl = process.env.GOOGLE_CALLBACK_URL || `${req.protocol}://${req.get('host')}`;
+  const redirectUri = `${baseUrl.replace(/\/+$/, '')}/api/auth/google/callback`;
   try {
-    const resp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${FIREBASE_API_KEY}`, {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestUri: redirectUri, postBody: `code=${code}&providerId=google.com`, returnSecureToken: true }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code' }),
     });
-    if (!resp.ok) throw new Error(await resp.text());
-    const fbAuth = await resp.json();
-    let uid = fbAuth.localId, email = fbAuth.email || '', name = fbAuth.displayName || '', photoURL = fbAuth.photoUrl || '';
-    if (!uid) { uid = email.replace(/[^a-zA-Z0-9]/g, '_') || 'user_' + Date.now(); }
-    const user = { uid, email, name, photoURL };
+    if (!tokenResponse.ok) throw new Error('Token exchange failed');
+    const tokens = await tokenResponse.json();
+    const idToken = tokens.id_token;
+    if (!idToken) throw new Error('No ID token received');
+    const decoded = jwt.decode(idToken);
+    const user = { uid: decoded.uid || decoded.sub, email: decoded.email || '', name: decoded.name || decoded.displayName || decoded.email?.split('@')[0] || 'User', photoURL: decoded.picture || decoded.photoURL || '' };
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('token', token, { httpOnly: true, secure: !!isVercel, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
     res.redirect('/');
