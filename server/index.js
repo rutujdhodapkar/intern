@@ -70,7 +70,7 @@ app.post('/api/auth/verify-token', async (req, res) => {
 
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('token', token, {
-      httpOnly: true, secure: !!isVercel, sameSite: 'lax',
+      httpOnly: true, secure: !!isVercel, sameSite: 'lax', path: '/',
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
     res.json({ success: true, user, token });
@@ -86,13 +86,13 @@ app.get('/api/auth/me', (req, res) => {
     const user = jwt.verify(token, JWT_SECRET);
     res.json({ success: true, user });
   } catch {
-    res.clearCookie('token');
+    res.clearCookie('token', { path: '/' });
     res.json({ success: true, user: null });
   }
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('token');
+  res.clearCookie('token', { path: '/' });
   res.json({ success: true });
 });
 
@@ -295,7 +295,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     const decoded = jwt.decode(idToken);
     const user = { uid: decoded.sub, email: decoded.email || '', name: decoded.name || decoded.email?.split('@')[0] || 'User', photoURL: decoded.picture || '' };
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
-    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 7 * 24 * 60 * 60 * 1000 });
     res.redirect('/');
   } catch (err) {
     console.error('[AUTH] Callback error:', err.message);
