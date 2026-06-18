@@ -892,11 +892,16 @@ Evaluate this submission and respond with JSON only.`
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  if (db) {
-    console.log('Firebase Admin SDK connected with Firestore');
-  } else {
-    console.log('Firebase Admin SDK not configured. Set FIREBASE_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS.');
-  }
-});
+const isVercel = process.env.VERCEL;
+if (!isVercel) {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    if (db) {
+      console.log('Firebase Admin SDK connected with Firestore');
+    } else {
+      console.log('Firebase Admin SDK not configured. Set FIREBASE_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS.');
+    }
+  });
+}
+
+export default app;
