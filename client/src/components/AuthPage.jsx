@@ -1,41 +1,10 @@
-import React, { useState } from 'react';
-import { auth, googleProvider, isFirebaseConfigured } from '../firebase';
-import { signInWithPopup } from 'firebase/auth';
+import React from 'react';
+import { loginWithGoogle } from '../services/data';
 import GooeyNav from './GooeyNav';
 
 export default function AuthPage({ onAuthSuccess, onBackToSite }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleGoogleLogin = async () => {
-    if (!isFirebaseConfigured || !auth || !googleProvider) {
-      setError('Firebase/Google Login is not configured.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    try {
-      googleProvider.setCustomParameters({ prompt: 'select_account' });
-      await signInWithPopup(auth, googleProvider);
-      onAuthSuccess();
-    } catch (err) {
-      if (err.code === 'auth/popup-blocked') {
-        setError('Popup was blocked. Please allow popups for this site and try again.');
-      } else if (err.code === 'auth/popup-closed-by-user') {
-        // User closed popup - do nothing
-      } else {
-        console.error('Google Sign In failed:', err);
-        setError(err.message);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const navItems = [
-    { label: loading ? 'Logging in...' : 'Sign In with Google', onClick: handleGoogleLogin },
+    { label: 'Sign In with Google', onClick: loginWithGoogle },
     { label: 'Back to Website', onClick: onBackToSite },
   ];
 
@@ -43,7 +12,6 @@ export default function AuthPage({ onAuthSuccess, onBackToSite }) {
     <section className="login-root auth-page-wrapper section-padding" style={{ minHeight: 'calc(100vh - 70px)', display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
       <div className="login-container" style={{ border: '3px solid #000', padding: '2.5rem', width: '100%', maxWidth: '520px', backgroundColor: '#fff', position: 'relative' }}>
         <div className="status-bar" style={{ height: '8px', backgroundColor: '#000', position: 'absolute', top: 0, left: 0, right: 0 }} />
-        
         <div className="login-header" style={{ marginBottom: '2rem', textAlign: 'center' }}>
           <div className="login-wordmark" style={{ fontWeight: 900, fontSize: '1.8rem', letterSpacing: '2px', marginBottom: '0.75rem' }}>DEV/CRAFT</div>
           <h2 className="login-title" style={{ fontSize: '1.6rem', fontWeight: 800, textTransform: 'uppercase', margin: '0.5rem 0' }}>Join Virtual Internship</h2>
@@ -51,16 +19,7 @@ export default function AuthPage({ onAuthSuccess, onBackToSite }) {
             Sign in with your Google account to instantly generate your offer letter and access your student project dashboard.
           </p>
         </div>
-
-        {error && <div className="error-msg" style={{ border: '2px solid #EA4335', padding: '0.75rem', color: '#EA4335', fontWeight: 'bold', fontSize: '0.85rem', marginBottom: '1.5rem', backgroundColor: '#FFF5F5' }}>{error}</div>}
-
-        <div style={{
-          background: '#000',
-          borderRadius: '100vw',
-          padding: '0.5rem',
-          display: 'flex',
-          justifyContent: 'center',
-        }}>
+        <div style={{ background: '#000', borderRadius: '100vw', padding: '0.5rem', display: 'flex', justifyContent: 'center' }}>
           <GooeyNav
             items={navItems}
             particleCount={12}

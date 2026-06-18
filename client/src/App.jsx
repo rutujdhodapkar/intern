@@ -24,9 +24,10 @@ import {
   fetchSelfReferralCode,
   checkUserBan,
   fetchAdminMessages,
+  fetchCurrentUser,
+  logout as serverLogout,
+  loginWithGoogle,
 } from "./services/data";
-import { auth, googleProvider, isFirebaseConfigured } from "./firebase";
-import { onAuthStateChanged, signOut, signInWithPopup } from "firebase/auth";
 
 async function sha256(message) {
   const msgBuffer = new TextEncoder().encode(message);
@@ -35,7 +36,6 @@ async function sha256(message) {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Country codes list (top 60+ countries)
 const COUNTRY_CODES = [
   { code: "+91", country: "India", iso: "IN" },
   { code: "+1", country: "United States", iso: "US" },
@@ -88,10 +88,8 @@ const COUNTRY_CODES = [
   { code: "+593", country: "Ecuador", iso: "EC" },
   { code: "+64", country: "New Zealand", iso: "NZ" },
 ];
-
 const COUNTRY_NAMES = COUNTRY_CODES.map((c) => c.country).sort();
 
-/** Auto-detect country code from browser locale */
 function detectCountryCode() {
   const lang = navigator.language || navigator.userLanguage || "";
   const region = lang.includes("-") ? lang.split("-")[1].toUpperCase() : "";
@@ -100,1010 +98,266 @@ function detectCountryCode() {
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState("site"); // 'site', 'auth', 'dashboard', 'admin'
+  const [currentView, setCurrentView] = useState("site");
   const [referralCode, setReferralCode] = useState("");
-
-  // Routing Redirection Target
   const [authRedirectTarget, setAuthRedirectTarget] = useState("site");
-
-  // Auth States
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   const [hasReferralCode, setHasReferralCode] = useState(false);
-
-  // Profile Prompt States
   const [showProfilePrompt, setShowProfilePrompt] = useState(false);
   const [profileForm, setProfileForm] = useState({
-    countryCode: detectCountryCode(),
-    phone: "",
-    college: "",
-    city: "",
-    country: "",
-    upiId: "",
+    countryCode: detectCountryCode(), phone: "", college: "", city: "", country: "", upiId: "",
   });
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileErrors, setProfileErrors] = useState({});
   const [referralCodeInput, setReferralCodeInput] = useState("");
-  const [referralCheckStatus, setReferralCheckStatus] = useState("idle"); // 'idle' | 'checking' | 'matched' | 'not_matched'
-
-  // Internship Enrollment Pipeline
+  const [referralCheckStatus, setReferralCheckStatus] = useState("idle");
   const [pendingEnrollmentDomain, setPendingEnrollmentDomain] = useState(null);
-
-  // ID Card Modal
   const [showIdCard, setShowIdCard] = useState(false);
   const [idCardEnrollment, setIdCardEnrollment] = useState(null);
   const [idCardLoading, setIdCardLoading] = useState(false);
-
   const [showEarnModal, setShowEarnModal] = useState(false);
-  const [userBan, setUserBan] = useState(null); // null | { banType, reason }
+  const [userBan, setUserBan] = useState(null);
   const [adminMessages, setAdminMessages] = useState([]);
   const [dismissedMessages, setDismissedMessages] = useState(new Set());
 
-  // Listen to Firebase Auth state
+  // Check auth on mount
   useEffect(() => {
-    if (!isFirebaseConfigured || !auth) {
-      setAuthLoading(false);
-      return;
-    }
-
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    fetchCurrentUser().then(async (currentUser) => {
       setUser(currentUser);
       if (currentUser && currentUser.email) {
-        // Always re-read URL on auth change so referral is checked at login
         const { code: urlCode, matched } = await processReferralFromUrl();
         const storedReferral = matched ? urlCode : "";
         if (storedReferral) {
           setReferralCode(storedReferral);
-          // Save referral permanently to user's profile
-          savePermanentReferralCode(currentUser.uid, storedReferral).catch(
-            () => {},
-          );
+          savePermanentReferralCode(currentUser.uid, storedReferral).catch(() => {});
+          recordReferralLogin(storedReferral, currentUser).catch(() => {});
         }
-        if (storedReferral) {
-          recordReferralLogin(storedReferral, currentUser).catch((e) => {
-            console.warn("Could not record referral login:", e.message);
-          });
-        }
-
-        // Check if user has a self-created referral code
-        fetchSelfReferralCode(currentUser.uid)
-          .then((code) => {
-            setHasReferralCode(!!code);
-          })
-          .catch(() => setHasReferralCode(false));
-
-        // Check root admin hash
+        fetchSelfReferralCode(currentUser.uid).then(setHasReferralCode).catch(() => setHasReferralCode(false));
         const hash = await sha256(currentUser.email.toLowerCase());
-        const isRootAdmin =
-          hash ===
-          "9de7c6f74278613debd72673db80f6d8d69bb7c0aae71746745d75fc5e264083";
-        let isUserAdmin = isRootAdmin;
-
-        if (!isUserAdmin) {
-          try {
-            const checkRes = await checkAdminStatus(currentUser.email);
-            isUserAdmin = checkRes.isAdmin;
-          } catch (e) {
-            console.warn("Could not verify admin status:", e.message);
-          }
-        }
-        setIsAdmin(isUserAdmin);
-
-        // Check if user is banned
-        try {
-          const ban = await checkUserBan(currentUser.email);
-          setUserBan(ban || null);
-        } catch {}
-
-        // Fetch admin messages for this user
-        try {
-          const msgs = await fetchAdminMessages(currentUser.email);
-          setAdminMessages(msgs || []);
-        } catch {}
-
-        // Fetch / Sync profile details from RTDB
+        const isRootAdmin = hash === "9de7c6f74278613debd72673db80f6d8d69bb7c0aae71746745d75fc5e264083";
+        let ua = isRootAdmin;
+        if (!ua) { try { const r = await checkAdminStatus(currentUser.email); ua = r.isAdmin; } catch {} }
+        setIsAdmin(ua);
+        try { const ban = await checkUserBan(currentUser.email); setUserBan(ban || null); } catch {}
+        try { const msgs = await fetchAdminMessages(currentUser.email); setAdminMessages(msgs || []); } catch {}
         try {
           const profile = await fetchUserProfile(currentUser.uid);
           if (profile) {
             setUserProfile(profile);
-
-            // Check if profile is complete — UPI is only required during enrollment, not plain login
-            const isComplete =
-              profile.phone &&
-              profile.college &&
-              profile.city &&
-              profile.country;
-            if (!isComplete) {
-              setProfileForm({
-                countryCode: profile.countryCode || detectCountryCode(),
-                phone: profile.phone || "",
-                college: profile.college || "",
-                city: profile.city || "",
-                country: profile.country || "",
-                upiId: profile.upiId || "",
-              });
+            const complete = profile.phone && profile.college && profile.city && profile.country;
+            if (!complete) {
+              setProfileForm({ countryCode: profile.countryCode || detectCountryCode(), phone: profile.phone || "", college: profile.college || "", city: profile.city || "", country: profile.country || "", upiId: profile.upiId || "" });
               setShowProfilePrompt(true);
             } else {
-              // Profile is complete!
-              // If they already have applied internships, direct open their dashboard
               try {
-                const userEnrs = await fetchUserEnrollments(currentUser.uid);
-                if (
-                  currentView !== "admin" &&
-                  currentView !== "site" &&
-                  userEnrs.length > 0
-                ) {
-                  setCurrentView("dashboard");
-                } else if (pendingEnrollmentDomain) {
-                  await enrollStudent(
-                    currentUser.uid,
-                    profile,
-                    pendingEnrollmentDomain,
-                  );
-                  setPendingEnrollmentDomain(null);
-                  setCurrentView("dashboard");
-                } else if (currentView === "auth") {
-                  setCurrentView(isUserAdmin ? "admin" : authRedirectTarget);
-                }
-              } catch (e) {
-                console.warn(
-                  "Error fetching user enrollments on auth change:",
-                  e,
-                );
-                if (pendingEnrollmentDomain) {
-                  await enrollStudent(
-                    currentUser.uid,
-                    profile,
-                    pendingEnrollmentDomain,
-                  );
-                  setPendingEnrollmentDomain(null);
-                  setCurrentView("dashboard");
-                } else if (currentView === "auth") {
-                  setCurrentView(isUserAdmin ? "admin" : authRedirectTarget);
-                }
+                const enrs = await fetchUserEnrollments(currentUser.uid);
+                if (currentView !== "admin" && currentView !== "site" && enrs.length > 0) setCurrentView("dashboard");
+                else if (pendingEnrollmentDomain) { await enrollStudent(currentUser.uid, profile, pendingEnrollmentDomain); setPendingEnrollmentDomain(null); setCurrentView("dashboard"); }
+                else if (currentView === "auth") setCurrentView(ua ? "admin" : authRedirectTarget);
+              } catch {
+                if (pendingEnrollmentDomain) { await enrollStudent(currentUser.uid, profile, pendingEnrollmentDomain); setPendingEnrollmentDomain(null); setCurrentView("dashboard"); }
+                else if (currentView === "auth") setCurrentView(ua ? "admin" : authRedirectTarget);
               }
             }
           } else {
-            // Profile does not exist yet
-            setProfileForm({
-              countryCode: detectCountryCode(),
-              phone: "",
-              college: "",
-              city: "",
-              country: "",
-              upiId: "",
-            });
+            setProfileForm({ countryCode: detectCountryCode(), phone: "", college: "", city: "", country: "", upiId: "" });
             setShowProfilePrompt(true);
           }
-        } catch (err) {
-          console.error("Profile fetch failed:", err);
-        }
+        } catch (err) { console.error("Profile fetch failed:", err); }
       } else {
-        setIsAdmin(false);
-        setUserProfile(null);
-        setHasReferralCode(false);
-        setUserBan(null);
-        setAdminMessages([]);
+        setIsAdmin(false); setUserProfile(null); setHasReferralCode(false); setUserBan(null); setAdminMessages([]);
       }
       setAuthLoading(false);
     });
-
-    return () => unsubscribe();
   }, [currentView, pendingEnrollmentDomain, authRedirectTarget]);
 
-  // Reset referral input when profile prompt opens
   useEffect(() => {
-    if (showProfilePrompt) {
-      setReferralCodeInput("");
-      setReferralCheckStatus("idle");
-    }
+    if (showProfilePrompt) { setReferralCodeInput(""); setReferralCheckStatus("idle"); }
   }, [showProfilePrompt]);
 
-  // Referral tracking — read ref from URL, count visit if matched, persist code for intern enrollment
   useEffect(() => {
-    processReferralFromUrl()
-      .then(({ code, matched }) => {
-        if (matched && code) {
-          setReferralCode(code);
-        } else {
-          setReferralCode("");
-        }
-      })
-      .catch((error) => {
-        console.warn("Referral processing failed:", error.message);
-      });
+    processReferralFromUrl().then(({ code, matched }) => { setReferralCode(matched && code ? code : ""); }).catch(() => {});
   }, []);
 
   const handleApplyDomain = async (domainObj) => {
-    if (!user) {
-      setPendingEnrollmentDomain(domainObj);
-      setAuthRedirectTarget("dashboard");
-      setCurrentView("auth");
-      return;
-    }
-
-    // Block if banned from internship
-    if (
-      userBan &&
-      (userBan.banType === "both" || userBan.banType === "internship")
-    ) {
-      alert(
-        "Your account has been restricted from applying to internships." +
-          (userBan.reason ? " Reason: " + userBan.reason : ""),
-      );
-      return;
-    }
-
-    // Ensure a minimal profile exists (don't block enrollment with a form)
+    if (!user) { setPendingEnrollmentDomain(domainObj); setAuthRedirectTarget("dashboard"); setCurrentView("auth"); return; }
+    if (userBan && (userBan.banType === "both" || userBan.banType === "internship")) { alert("Your account has been restricted." + (userBan.reason ? " Reason: " + userBan.reason : "")); return; }
     let profile = userProfile;
     if (!profile || !profile.name) {
-      profile = {
-        name: user.displayName || "Student",
-        email: user.email || "",
-        photoURL: user.photoURL || "",
-        countryCode: "+91",
-        phone: "",
-        college: "",
-        city: "",
-        country: "",
-        upiId: "",
-      };
-      try {
-        await saveUserProfile(user.uid, profile);
-        setUserProfile(profile);
-      } catch {}
+      profile = { name: user.displayName || "Student", email: user.email || "", photoURL: user.photoURL || "", countryCode: "+91", phone: "", college: "", city: "", country: "", upiId: "" };
+      try { await saveUserProfile(user.uid, profile); setUserProfile(profile); } catch {}
     }
-
     try {
       setAuthLoading(true);
-      const existingEnrollments = await fetchUserEnrollments(user.uid);
-      const alreadyApplied = existingEnrollments.some(
-        (e) =>
-          e.domainId === domainObj.id ||
-          (e.domain || "").toLowerCase() ===
-            (domainObj.title || "").toLowerCase(),
-      );
-      if (alreadyApplied) {
-        setCurrentView("dashboard");
-        return;
-      }
+      const existing = await fetchUserEnrollments(user.uid);
+      if (existing.some(e => e.domainId === domainObj.id || (e.domain || "").toLowerCase() === (domainObj.title || "").toLowerCase())) { setCurrentView("dashboard"); return; }
       await enrollStudent(user.uid, profile, domainObj);
       setCurrentView("dashboard");
-    } catch (err) {
-      alert("Enrollment failed: " + err.message);
-    } finally {
-      setAuthLoading(false);
-    }
+    } catch (err) { alert("Enrollment failed: " + err.message); }
+    finally { setAuthLoading(false); }
   };
 
   const validateProfile = () => {
     const errors = {};
     const phoneDigits = profileForm.phone.replace(/\D/g, "");
-    if (!profileForm.phone.trim()) {
-      errors.phone = "Phone number is required.";
-    } else if (phoneDigits.length < 7 || phoneDigits.length > 15) {
-      errors.phone = "Enter a valid phone number (7–15 digits).";
-    }
-    if (!profileForm.college.trim() || profileForm.college.trim().length < 3) {
-      errors.college = "Please enter your college/university name.";
-    }
-    if (!profileForm.city.trim() || profileForm.city.trim().length < 2) {
-      errors.city = "Please enter a valid city name.";
-    }
-    if (!profileForm.country) {
-      errors.country = "Please select your country.";
-    }
-    // UPI is only required when the user is applying for an internship via referral
-    if (pendingEnrollmentDomain) {
-      if (
-        !profileForm.upiId.trim() ||
-        !/^[\w.\-]+@[\w.\-]+$/.test(profileForm.upiId.trim())
-      ) {
-        errors.upiId = "Please enter a valid UPI ID (e.g. name@upi).";
-      }
-    }
+    if (!profileForm.phone.trim()) errors.phone = "Phone number is required.";
+    else if (phoneDigits.length < 7 || phoneDigits.length > 15) errors.phone = "Enter a valid phone number (7–15 digits).";
+    if (!profileForm.college.trim() || profileForm.college.trim().length < 3) errors.college = "Please enter your college/university name.";
+    if (!profileForm.city.trim() || profileForm.city.trim().length < 2) errors.city = "Please enter a valid city name.";
+    if (!profileForm.country) errors.country = "Please select your country.";
+    if (pendingEnrollmentDomain && (!profileForm.upiId.trim() || !/^[\w.\-]+@[\w.\-]+$/.test(profileForm.upiId.trim()))) errors.upiId = "Please enter a valid UPI ID.";
     return errors;
   };
 
   const handleProfileSubmit = async (e) => {
     e.preventDefault();
     const errors = validateProfile();
-    if (Object.keys(errors).length > 0) {
-      setProfileErrors(errors);
-      return;
-    }
-    setProfileErrors({});
-    setProfileSaving(true);
-
+    if (Object.keys(errors).length > 0) { setProfileErrors(errors); return; }
+    setProfileErrors({}); setProfileSaving(true);
     try {
       const fullPhone = `${profileForm.countryCode}${profileForm.phone.trim()}`;
-      const updatedProfile = {
-        name: user.displayName || "Student",
-        email: user.email || "",
-        photoURL: user.photoURL || "",
-        countryCode: profileForm.countryCode,
-        phone: fullPhone,
-        college: profileForm.college.trim(),
-        city: profileForm.city.trim(),
-        country: profileForm.country,
-        upiId: profileForm.upiId.trim(),
-      };
-      // Store referral code in localStorage if matched (enrollStudent will read & clear it)
-      if (referralCheckStatus === "matched" && referralCodeInput.trim()) {
-        localStorage.setItem(
-          "detected_referral_code",
-          referralCodeInput.trim().toUpperCase(),
-        );
-      }
-
+      const updatedProfile = { name: user.displayName || "Student", email: user.email || "", photoURL: user.photoURL || "", countryCode: profileForm.countryCode, phone: fullPhone, college: profileForm.college.trim(), city: profileForm.city.trim(), country: profileForm.country, upiId: profileForm.upiId.trim() };
+      if (referralCheckStatus === "matched" && referralCodeInput.trim()) localStorage.setItem("detected_referral_code", referralCodeInput.trim().toUpperCase());
       await saveUserProfile(user.uid, updatedProfile);
-      setUserProfile(updatedProfile);
-      setShowProfilePrompt(false);
-
-      // Execute pending enrollment if exists
-      if (pendingEnrollmentDomain) {
-        await enrollStudent(user.uid, updatedProfile, pendingEnrollmentDomain);
-        setPendingEnrollmentDomain(null);
-        setCurrentView("dashboard");
-      } else if (currentView === "auth") {
-        setCurrentView(isAdmin ? "admin" : authRedirectTarget);
-      }
-    } catch (err) {
-      alert("Failed to save profile: " + err.message);
-    } finally {
-      setProfileSaving(false);
-    }
+      setUserProfile(updatedProfile); setShowProfilePrompt(false);
+      if (pendingEnrollmentDomain) { await enrollStudent(user.uid, updatedProfile, pendingEnrollmentDomain); setPendingEnrollmentDomain(null); setCurrentView("dashboard"); }
+      else if (currentView === "auth") setCurrentView(isAdmin ? "admin" : authRedirectTarget);
+    } catch (err) { alert("Failed to save profile: " + err.message); }
+    finally { setProfileSaving(false); }
   };
 
   const handleLoginClick = async () => {
-    if (isFirebaseConfigured && auth && googleProvider) {
-      try {
-        setAuthLoading(true);
-        googleProvider.setCustomParameters({ prompt: "select_account" });
-        await signInWithPopup(auth, googleProvider);
-      } catch (err) {
-        if (err.code === "auth/popup-blocked") {
-          alert(
-            "Popup was blocked by your browser. Please allow popups for this site or try again.",
-          );
-        } else if (err.code === "auth/popup-closed-by-user") {
-          // User closed popup - not an error
-        } else {
-          console.error("Google Sign In failed:", err);
-        }
-      } finally {
-        setAuthLoading(false);
-      }
-    } else {
-      setAuthRedirectTarget("site");
-      setCurrentView("auth");
-    }
+    loginWithGoogle();
   };
 
   const handleShowIdCard = async () => {
     if (!user) return;
     setIdCardLoading(true);
-    try {
-      const enrollments = await fetchUserEnrollments(user.uid);
-      const activeEnrollment =
-        enrollments.find((e) => e.status !== "Archived") || enrollments[0];
-      setIdCardEnrollment(activeEnrollment || null);
-      setShowIdCard(true);
-    } catch {
-      setIdCardEnrollment(null);
-      setShowIdCard(true);
-    } finally {
-      setIdCardLoading(false);
-    }
+    try { const enrollments = await fetchUserEnrollments(user.uid); const ae = enrollments.find(e => e.status !== "Archived") || enrollments[0]; setIdCardEnrollment(ae || null); setShowIdCard(true); }
+    catch { setIdCardEnrollment(null); setShowIdCard(true); }
+    finally { setIdCardLoading(false); }
   };
 
   const handleLogout = async () => {
-    if (isFirebaseConfigured && auth) {
-      await signOut(auth);
-    }
-    setUser(null);
-    setUserProfile(null);
-    setIsAdmin(false);
-    setHasReferralCode(false);
-    setCurrentView("site");
+    await serverLogout();
+    setUser(null); setUserProfile(null); setIsAdmin(false); setHasReferralCode(false); setCurrentView("site");
   };
 
   const renderCurrentView = () => {
     switch (currentView) {
-      case "admin":
-        return (
-          <AdminPanel
-            onClose={() => setCurrentView("site")}
-            user={user}
-            onLogout={handleLogout}
-          />
-        );
-      case "auth":
-        return (
-          <AuthPage
-            onAuthSuccess={() => {}}
-            onBackToSite={() => setCurrentView("site")}
-          />
-        );
-      case "dashboard":
-        return (
-          <>
-            <Navbar
-              onAdminClick={() => setCurrentView("admin")}
-              user={user}
-              isAdmin={isAdmin}
-              onLogout={handleLogout}
-              authLoading={authLoading}
-              onLoginClick={handleLoginClick}
-              onHomeClick={() => setCurrentView("site")}
-              onDashboardClick={() => setCurrentView("dashboard")}
-              onReferralDashboardClick={() =>
-                setCurrentView("referralDashboard")
-              }
-              hasReferralCode={hasReferralCode}
-              onShowIdCard={handleShowIdCard}
-              onEarnClick={() => setShowEarnModal(true)}
-            />
-            <StudentDashboard
-              user={user}
-              userProfile={userProfile}
-              onExploreClick={() => {
-                setCurrentView("site");
-                setTimeout(() => {
-                  document
-                    .getElementById("domains")
-                    ?.scrollIntoView({ behavior: "smooth" });
-                }, 100);
-              }}
-            />
-            <Footer />
-          </>
-        );
-      case "referralDashboard":
-        return (
-          <>
-            <Navbar
-              onAdminClick={() => setCurrentView("admin")}
-              user={user}
-              isAdmin={isAdmin}
-              onLogout={handleLogout}
-              authLoading={authLoading}
-              onLoginClick={handleLoginClick}
-              onHomeClick={() => setCurrentView("site")}
-              onDashboardClick={() => setCurrentView("dashboard")}
-              onReferralDashboardClick={() =>
-                setCurrentView("referralDashboard")
-              }
-              hasReferralCode={hasReferralCode}
-              onShowIdCard={handleShowIdCard}
-              onEarnClick={() => setShowEarnModal(true)}
-            />
-            <ReferralDashboard
-              user={user}
-              onBackClick={() => setCurrentView("site")}
-            />
-            <Footer />
-          </>
-        );
+      case "admin": return <AdminPanel onClose={() => setCurrentView("site")} user={user} onLogout={handleLogout} />;
+      case "auth": return <AuthPage onAuthSuccess={() => {}} onBackToSite={() => setCurrentView("site")} />;
+      case "dashboard": return (
+        <>
+          <Navbar onAdminClick={() => setCurrentView("admin")} user={user} isAdmin={isAdmin} onLogout={handleLogout} authLoading={authLoading} onLoginClick={handleLoginClick} onHomeClick={() => setCurrentView("site")} onDashboardClick={() => setCurrentView("dashboard")} onReferralDashboardClick={() => setCurrentView("referralDashboard")} hasReferralCode={hasReferralCode} onShowIdCard={handleShowIdCard} onEarnClick={() => setShowEarnModal(true)} />
+          <StudentDashboard user={user} userProfile={userProfile} onExploreClick={() => { setCurrentView("site"); setTimeout(() => document.getElementById("domains")?.scrollIntoView({ behavior: "smooth" }), 100); }} />
+          <Footer />
+        </>
+      );
+      case "referralDashboard": return (
+        <>
+          <Navbar onAdminClick={() => setCurrentView("admin")} user={user} isAdmin={isAdmin} onLogout={handleLogout} authLoading={authLoading} onLoginClick={handleLoginClick} onHomeClick={() => setCurrentView("site")} onDashboardClick={() => setCurrentView("dashboard")} onReferralDashboardClick={() => setCurrentView("referralDashboard")} hasReferralCode={hasReferralCode} onShowIdCard={handleShowIdCard} onEarnClick={() => setShowEarnModal(true)} />
+          <ReferralDashboard user={user} onBackClick={() => setCurrentView("site")} />
+          <Footer />
+        </>
+      );
       case "site":
-      default:
-        return (
-          <>
-            <Navbar
-              onAdminClick={() => setCurrentView("admin")}
-              user={user}
-              isAdmin={isAdmin}
-              onLogout={handleLogout}
-              authLoading={authLoading}
-              onLoginClick={handleLoginClick}
-              onHomeClick={() => setCurrentView("site")}
-              onDashboardClick={() => setCurrentView("dashboard")}
-              onReferralDashboardClick={() =>
-                setCurrentView("referralDashboard")
-              }
-              hasReferralCode={hasReferralCode}
-              onShowIdCard={handleShowIdCard}
-              onEarnClick={() => {
-                const el = document.getElementById("earn");
-                if (el) el.scrollIntoView({ behavior: "smooth" });
-              }}
-            />
-            <Hero
-              onApplyClick={() => {
-                const el = document.getElementById("domains");
-                if (el) el.scrollIntoView({ behavior: "smooth" });
-              }}
-              onExploreClick={() => {
-                const el = document.getElementById("domains");
-                if (el) el.scrollIntoView({ behavior: "smooth" });
-              }}
-            />
-            <CareerPaths onApplyDomain={handleApplyDomain} />
-            <HowItWorks />
-            <FAQ />
-            <EarnSection
-              user={user}
-              userProfile={userProfile}
-              onLoginClick={handleLoginClick}
-              userBan={userBan}
-            />
-            <Footer />
-          </>
-        );
+      default: return (
+        <>
+          <Navbar onAdminClick={() => setCurrentView("admin")} user={user} isAdmin={isAdmin} onLogout={handleLogout} authLoading={authLoading} onLoginClick={handleLoginClick} onHomeClick={() => setCurrentView("site")} onDashboardClick={() => setCurrentView("dashboard")} onReferralDashboardClick={() => setCurrentView("referralDashboard")} hasReferralCode={hasReferralCode} onShowIdCard={handleShowIdCard} onEarnClick={() => { const el = document.getElementById("earn"); if (el) el.scrollIntoView({ behavior: "smooth" }); }} />
+          <Hero onApplyClick={() => document.getElementById("domains")?.scrollIntoView({ behavior: "smooth" })} onExploreClick={() => document.getElementById("domains")?.scrollIntoView({ behavior: "smooth" })} />
+          <CareerPaths onApplyDomain={handleApplyDomain} />
+          <HowItWorks />
+          <FAQ />
+          <EarnSection user={user} userProfile={userProfile} onLoginClick={handleLoginClick} userBan={userBan} />
+          <Footer />
+        </>
+      );
     }
   };
 
-  const inputStyle = {
-    border: "2px solid #000",
-    padding: "0.6rem 0.75rem",
-    width: "100%",
-    boxSizing: "border-box",
-    fontSize: "0.9rem",
-    outline: "none",
-    fontFamily: "inherit",
-  };
-  const errorStyle = {
-    color: "#EA4335",
-    fontSize: "0.75rem",
-    marginTop: "0.25rem",
-    fontWeight: 600,
-  };
+  const inputStyle = { border: "2px solid #000", padding: "0.6rem 0.75rem", width: "100%", boxSizing: "border-box", fontSize: "0.9rem", outline: "none", fontFamily: "inherit" };
+  const errorStyle = { color: "#EA4335", fontSize: "0.75rem", marginTop: "0.25rem", fontWeight: 600 };
 
   return (
     <>
-      {/* Admin Messages Banner */}
-      {adminMessages
-        .filter((m) => !dismissedMessages.has(m.id))
-        .map((msg) => {
-          const typeStyles = {
-            warning: { bg: "#FFF8E1", border: "#FBBC05", color: "#7a5c00" },
-            success: { bg: "#E8F5E9", border: "#34A853", color: "#1a5c2e" },
-            info: { bg: "#E3F2FD", border: "#4285F4", color: "#1a3a6c" },
-          };
-          const ts = typeStyles[msg.type] || typeStyles.info;
-          return (
-            <div
-              key={msg.id}
-              style={{
-                position: "fixed",
-                top: 0,
-                left: 0,
-                right: 0,
-                zIndex: 9999,
-                background: ts.bg,
-                borderBottom: `3px solid ${ts.border}`,
-                padding: "0.65rem 1.5rem",
-                display: "flex",
-                alignItems: "center",
-                gap: "1rem",
-                flexWrap: "wrap",
-                fontSize: "0.88rem",
-                color: ts.color,
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                {msg.title && (
-                  <strong style={{ marginRight: "0.5rem" }}>
-                    {msg.title}:
-                  </strong>
-                )}
-                {msg.text}
-              </div>
-              <button
-                onClick={() =>
-                  setDismissedMessages((prev) => new Set([...prev, msg.id]))
-                }
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "1.2rem",
-                  color: ts.color,
-                  padding: "0 0.25rem",
-                  lineHeight: 1,
-                }}
-              >
-                ×
-              </button>
-            </div>
-          );
-        })}
-
+      {adminMessages.filter(m => !dismissedMessages.has(m.id)).map(msg => {
+        const ts = { warning: { bg: "#FFF8E1", border: "#FBBC05", color: "#7a5c00" }, success: { bg: "#E8F5E9", border: "#34A853", color: "#1a5c2e" }, info: { bg: "#E3F2FD", border: "#4285F4", color: "#1a3a6c" } };
+        const s = ts[msg.type] || ts.info;
+        return (
+          <div key={msg.id} style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999, background: s.bg, borderBottom: `3px solid ${s.border}`, padding: "0.65rem 1.5rem", display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", fontSize: "0.88rem", color: s.color }}>
+            <div style={{ flex: 1 }}>{msg.title && <strong style={{ marginRight: "0.5rem" }}>{msg.title}:</strong>}{msg.text}</div>
+            <button onClick={() => setDismissedMessages(prev => new Set([...prev, msg.id]))} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2rem", color: s.color, padding: "0 0.25rem", lineHeight: 1 }}>×</button>
+          </div>
+        );
+      })}
       {renderCurrentView()}
-
-      {/* Collect Student Profile Details Modal */}
-      {/* ID Card Modal */}
-      {showIdCard && (
-        <IDCardModal
-          user={user}
-          userProfile={userProfile}
-          enrollment={idCardEnrollment}
-          onClose={() => {
-            setShowIdCard(false);
-            setIdCardEnrollment(null);
-          }}
-        />
-      )}
-
+      {showIdCard && <IDCardModal user={user} userProfile={userProfile} enrollment={idCardEnrollment} onClose={() => { setShowIdCard(false); setIdCardEnrollment(null); }} />}
       {showEarnModal && (
-        <div
-          onClick={() => setShowEarnModal(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.7)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "flex-start",
-            zIndex: 1500,
-            overflowY: "auto",
-            padding: "2rem 1rem",
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{ width: "100%", maxWidth: "820px", position: "relative" }}
-          >
-            <button
-              onClick={() => setShowEarnModal(false)}
-              style={{
-                position: "absolute",
-                top: "0.5rem",
-                right: "0.5rem",
-                zIndex: 10,
-                background: "#000",
-                border: "none",
-                color: "#fff",
-                width: "32px",
-                height: "32px",
-                cursor: "pointer",
-                fontSize: "1.2rem",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              ×
-            </button>
-            <EarnSection
-              user={user}
-              userProfile={userProfile}
-              onLoginClick={handleLoginClick}
-              userBan={userBan}
-            />
+        <div onClick={() => setShowEarnModal(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", justifyContent: "center", alignItems: "flex-start", zIndex: 1500, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: "820px", position: "relative" }}>
+            <button onClick={() => setShowEarnModal(false)} style={{ position: "absolute", top: "0.5rem", right: "0.5rem", zIndex: 10, background: "#000", border: "none", color: "#fff", width: "32px", height: "32px", cursor: "pointer", fontSize: "1.2rem", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+            <EarnSection user={user} userProfile={userProfile} onLoginClick={handleLoginClick} userBan={userBan} />
           </div>
         </div>
       )}
-
       {showProfilePrompt && (
-        <div
-          className="modal-overlay"
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0,0,0,0.75)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            zIndex: 1100,
-          }}
-        >
-          <div
-            className="modal-content card-sharp"
-            style={{
-              backgroundColor: "#fff",
-              padding: "2.5rem",
-              width: "90%",
-              maxWidth: "500px",
-              border: "3px solid #000",
-              boxShadow: "8px 8px 0 #000",
-              position: "relative",
-              maxHeight: "92vh",
-              overflowY: "auto",
-            }}
-          >
-            <div
-              style={{
-                height: "6px",
-                background: "linear-gradient(90deg,#000 0%,#444 100%)",
-                position: "sticky",
-                top: "-2.5rem",
-                marginBottom: "1.5rem",
-                marginLeft: "-2.5rem",
-                marginRight: "-2.5rem",
-                marginTop: "-2.5rem",
-              }}
-            />
-
-            <h3
-              style={{
-                fontSize: "1.4rem",
-                fontWeight: 900,
-                textTransform: "uppercase",
-                marginBottom: "0.4rem",
-              }}
-            >
-              Complete Your Profile
-            </h3>
-            <p
-              style={{
-                fontSize: "0.82rem",
-                color: "var(--text-secondary)",
-                marginBottom: "1.5rem",
-                lineHeight: "1.5",
-              }}
-            >
-              We need a few details to issue your Offer Letter and set up your
-              internship. This info is saved and won't be asked again.
-            </p>
-
+        <div className="modal-overlay" style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.75)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1100 }}>
+          <div className="modal-content card-sharp" style={{ backgroundColor: "#fff", padding: "2.5rem", width: "90%", maxWidth: "500px", border: "3px solid #000", boxShadow: "8px 8px 0 #000", position: "relative", maxHeight: "92vh", overflowY: "auto" }}>
+            <div style={{ height: "6px", background: "linear-gradient(90deg,#000 0%,#444 100%)", position: "sticky", top: "-2.5rem", marginBottom: "1.5rem", marginLeft: "-2.5rem", marginRight: "-2.5rem", marginTop: "-2.5rem" }} />
+            <h3 style={{ fontSize: "1.4rem", fontWeight: 900, textTransform: "uppercase", marginBottom: "0.4rem" }}>Complete Your Profile</h3>
+            <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "1.5rem", lineHeight: "1.5" }}>We need a few details to issue your Offer Letter and set up your internship.</p>
             <form onSubmit={handleProfileSubmit}>
-              {/* Phone Number with Country Code */}
               <div style={{ marginBottom: "1.25rem" }}>
-                <label
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    display: "block",
-                    marginBottom: "0.4rem",
-                  }}
-                >
-                  Phone Number *
-                </label>
+                <label style={{ fontWeight: 800, fontSize: "0.78rem", textTransform: "uppercase", display: "block", marginBottom: "0.4rem" }}>Phone Number *</label>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
-                  <select
-                    value={profileForm.countryCode}
-                    onChange={(e) =>
-                      setProfileForm({
-                        ...profileForm,
-                        countryCode: e.target.value,
-                      })
-                    }
-                    style={{
-                      ...inputStyle,
-                      width: "auto",
-                      minWidth: "110px",
-                      flex: "0 0 auto",
-                      cursor: "pointer",
-                      background: "#fff",
-                    }}
-                  >
-                    {COUNTRY_CODES.map((c, i) => (
-                      <option key={`${c.iso}-${i}`} value={c.code}>
-                        {c.code} {c.iso}
-                      </option>
-                    ))}
+                  <select value={profileForm.countryCode} onChange={e => setProfileForm({ ...profileForm, countryCode: e.target.value })} style={{ ...inputStyle, width: "auto", minWidth: "110px", flex: "0 0 auto", cursor: "pointer", background: "#fff" }}>
+                    {COUNTRY_CODES.map((c, i) => <option key={`${c.iso}-${i}`} value={c.code}>{c.code} {c.iso}</option>)}
                   </select>
-                  <input
-                    type="tel"
-                    placeholder="9876543210"
-                    value={profileForm.phone}
-                    onChange={(e) => {
-                      const val = e.target.value.replace(/[^\d\s\-]/g, "");
-                      setProfileForm({ ...profileForm, phone: val });
-                    }}
-                    style={{ ...inputStyle, flex: 1 }}
-                  />
+                  <input type="tel" placeholder="9876543210" value={profileForm.phone} onChange={e => { const val = e.target.value.replace(/[^\d\s\-]/g, ""); setProfileForm({ ...profileForm, phone: val }); }} style={{ ...inputStyle, flex: 1 }} />
                 </div>
-                {profileErrors.phone && (
-                  <div style={errorStyle}>{profileErrors.phone}</div>
-                )}
+                {profileErrors.phone && <div style={errorStyle}>{profileErrors.phone}</div>}
               </div>
-
-              {/* College */}
               <div style={{ marginBottom: "1.25rem" }}>
-                <label
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    display: "block",
-                    marginBottom: "0.4rem",
-                  }}
-                >
-                  College / University *
-                </label>
-                <input
-                  type="text"
-                  placeholder="E.g., IIT Bombay"
-                  value={profileForm.college}
-                  onChange={(e) =>
-                    setProfileForm({ ...profileForm, college: e.target.value })
-                  }
-                  style={inputStyle}
-                />
-                {profileErrors.college && (
-                  <div style={errorStyle}>{profileErrors.college}</div>
-                )}
+                <label style={{ fontWeight: 800, fontSize: "0.78rem", textTransform: "uppercase", display: "block", marginBottom: "0.4rem" }}>College / University *</label>
+                <input type="text" placeholder="E.g., IIT Bombay" value={profileForm.college} onChange={e => setProfileForm({ ...profileForm, college: e.target.value })} style={inputStyle} />
+                {profileErrors.college && <div style={errorStyle}>{profileErrors.college}</div>}
               </div>
-
-              {/* Country */}
               <div style={{ marginBottom: "1.25rem" }}>
-                <label
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    display: "block",
-                    marginBottom: "0.4rem",
-                  }}
-                >
-                  Country *
-                </label>
-                <select
-                  value={profileForm.country}
-                  onChange={(e) =>
-                    setProfileForm({ ...profileForm, country: e.target.value })
-                  }
-                  style={{
-                    ...inputStyle,
-                    cursor: "pointer",
-                    background: "#fff",
-                  }}
-                >
+                <label style={{ fontWeight: 800, fontSize: "0.78rem", textTransform: "uppercase", display: "block", marginBottom: "0.4rem" }}>Country *</label>
+                <select value={profileForm.country} onChange={e => setProfileForm({ ...profileForm, country: e.target.value })} style={{ ...inputStyle, cursor: "pointer", background: "#fff" }}>
                   <option value="">Select your country…</option>
-                  {COUNTRY_NAMES.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
+                  {COUNTRY_NAMES.map(name => <option key={name} value={name}>{name}</option>)}
                 </select>
-                {profileErrors.country && (
-                  <div style={errorStyle}>{profileErrors.country}</div>
-                )}
+                {profileErrors.country && <div style={errorStyle}>{profileErrors.country}</div>}
               </div>
-
-              {/* City */}
               <div style={{ marginBottom: "1.25rem" }}>
-                <label
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    display: "block",
-                    marginBottom: "0.4rem",
-                  }}
-                >
-                  City *
-                </label>
-                <input
-                  type="text"
-                  placeholder="E.g., Mumbai"
-                  value={profileForm.city}
-                  onChange={(e) =>
-                    setProfileForm({ ...profileForm, city: e.target.value })
-                  }
-                  style={inputStyle}
-                />
-                {profileErrors.city && (
-                  <div style={errorStyle}>{profileErrors.city}</div>
-                )}
+                <label style={{ fontWeight: 800, fontSize: "0.78rem", textTransform: "uppercase", display: "block", marginBottom: "0.4rem" }}>City *</label>
+                <input type="text" placeholder="E.g., Mumbai" value={profileForm.city} onChange={e => setProfileForm({ ...profileForm, city: e.target.value })} style={inputStyle} />
+                {profileErrors.city && <div style={errorStyle}>{profileErrors.city}</div>}
               </div>
-
-              {/* UPI ID — only shown when applying for an internship via referral */}
               {pendingEnrollmentDomain && (
                 <div style={{ marginBottom: "1.25rem" }}>
-                  <label
-                    style={{
-                      fontWeight: 800,
-                      fontSize: "0.78rem",
-                      textTransform: "uppercase",
-                      display: "block",
-                      marginBottom: "0.4rem",
-                    }}
-                  >
-                    UPI ID *{" "}
-                    <span
-                      style={{
-                        fontWeight: 400,
-                        color: "#888",
-                        fontSize: "0.72rem",
-                        textTransform: "none",
-                      }}
-                    >
-                      (for internship payment)
-                    </span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="name@upi"
-                    value={profileForm.upiId}
-                    onChange={(e) =>
-                      setProfileForm({ ...profileForm, upiId: e.target.value })
-                    }
-                    style={inputStyle}
-                  />
-                  {profileErrors.upiId && (
-                    <div style={errorStyle}>{profileErrors.upiId}</div>
-                  )}
+                  <label style={{ fontWeight: 800, fontSize: "0.78rem", textTransform: "uppercase", display: "block", marginBottom: "0.4rem" }}>UPI ID * <span style={{ fontWeight: 400, color: "#888", fontSize: "0.72rem", textTransform: "none" }}>(for internship payment)</span></label>
+                  <input type="text" placeholder="name@upi" value={profileForm.upiId} onChange={e => setProfileForm({ ...profileForm, upiId: e.target.value })} style={inputStyle} />
+                  {profileErrors.upiId && <div style={errorStyle}>{profileErrors.upiId}</div>}
                 </div>
               )}
-
-              {/* Referral Code */}
               <div style={{ marginBottom: "2rem" }}>
-                <label
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    display: "block",
-                    marginBottom: "0.4rem",
-                  }}
-                >
-                  Referral Code (optional)
-                </label>
+                <label style={{ fontWeight: 800, fontSize: "0.78rem", textTransform: "uppercase", display: "block", marginBottom: "0.4rem" }}>Referral Code (optional)</label>
                 <div style={{ position: "relative" }}>
-                  <input
-                    type="text"
-                    placeholder="Enter referral code if you have one"
-                    value={referralCodeInput}
-                    onChange={async (e) => {
-                      const val = e.target.value.toUpperCase();
-                      setReferralCodeInput(val);
-                      if (!val.trim()) {
-                        setReferralCheckStatus("idle");
-                        return;
-                      }
-                      setReferralCheckStatus("checking");
-                      const matched = await isReferralCodeMatched(val);
-                      setReferralCheckStatus(
-                        matched ? "matched" : "not_matched",
-                      );
-                    }}
-                    style={{
-                      ...inputStyle,
-                      borderColor:
-                        referralCheckStatus === "matched"
-                          ? "#34A853"
-                          : referralCheckStatus === "not_matched"
-                            ? "#EA4335"
-                            : inputStyle.borderColor,
-                    }}
-                  />
-                  <div
-                    style={{
-                      fontSize: "0.75rem",
-                      marginTop: "0.3rem",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {referralCheckStatus === "checking" && (
-                      <span style={{ color: "#888" }}>Checking...</span>
-                    )}
-                    {referralCheckStatus === "matched" && (
-                      <span style={{ color: "#34A853" }}>
-                        Referral code matched! Discount QR will be applied.
-                      </span>
-                    )}
-                    {referralCheckStatus === "not_matched" && (
-                      <span style={{ color: "#EA4335" }}>
-                        Referral code didn't match. Default payment will be
-                        used.
-                      </span>
-                    )}
+                  <input type="text" placeholder="Enter referral code if you have one" value={referralCodeInput} onChange={async (e) => { const val = e.target.value.toUpperCase(); setReferralCodeInput(val); if (!val.trim()) { setReferralCheckStatus("idle"); return; } setReferralCheckStatus("checking"); const matched = await isReferralCodeMatched(val); setReferralCheckStatus(matched ? "matched" : "not_matched"); }} style={{ ...inputStyle, borderColor: referralCheckStatus === "matched" ? "#34A853" : referralCheckStatus === "not_matched" ? "#EA4335" : inputStyle.borderColor }} />
+                  <div style={{ fontSize: "0.75rem", marginTop: "0.3rem", fontWeight: 700 }}>
+                    {referralCheckStatus === "checking" && <span style={{ color: "#888" }}>Checking...</span>}
+                    {referralCheckStatus === "matched" && <span style={{ color: "#34A853" }}>Referral code matched!</span>}
+                    {referralCheckStatus === "not_matched" && <span style={{ color: "#EA4335" }}>Referral code didn't match.</span>}
                   </div>
                 </div>
               </div>
-
-              <button
-                type="submit"
-                className="btn-sharp"
-                style={{
-                  width: "100%",
-                  padding: "0.85rem",
-                  fontSize: "1rem",
-                  fontWeight: "bold",
-                }}
-                disabled={profileSaving}
-              >
-                {profileSaving ? "Saving Details..." : "Save & Continue →"}
-              </button>
+              <button type="submit" className="btn-sharp" style={{ width: "100%", padding: "0.85rem", fontSize: "1rem", fontWeight: "bold" }} disabled={profileSaving}>{profileSaving ? "Saving Details..." : "Save & Continue →"}</button>
             </form>
           </div>
         </div>

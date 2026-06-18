@@ -2,6 +2,7 @@ const API_BASE = import.meta.env.VITE_SERVER_URL || "";
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
@@ -17,6 +18,57 @@ async function apiFetch(path, options = {}) {
     throw new Error(data.message || "Request failed.");
   }
   return data;
+}
+
+// ─── Auth Functions (server-side, no Firebase SDK) ──────────────────────────
+let cachedUser = null;
+let authListeners = [];
+
+export function loginWithGoogle() {
+  window.location.href = `${API_BASE}/api/auth/google`;
+}
+
+export async function logout() {
+  await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+  cachedUser = null;
+  authListeners.forEach(fn => fn(null));
+}
+
+export async function fetchCurrentUser() {
+  try {
+    const res = await apiFetch("/api/auth/me");
+    cachedUser = res.user || null;
+    return cachedUser;
+  } catch {
+    cachedUser = null;
+    return null;
+  }
+}
+
+export async function getCurrentUser() {
+  if (cachedUser) return cachedUser;
+  return await fetchCurrentUser();
+}
+
+export function onAuthChange(callback) {
+  authListeners.push(callback);
+  return () => { authListeners = authListeners.filter(fn => fn !== callback); };
+}
+
+export function notifyAuthChange(user) {
+  cachedUser = user;
+  authListeners.forEach(fn => fn(user));
+}
+
+// Verify a Firebase ID token (used if client has Firebase SDK, otherwise OAuth redirect)
+export async function verifyIdToken(idToken) {
+  const res = await apiFetch("/api/auth/verify-token", {
+    method: "POST",
+    body: JSON.stringify({ idToken }),
+  });
+  cachedUser = res.user;
+  authListeners.forEach(fn => fn(res.user));
+  return res.user;
 }
 
 function snapToArray(val) {

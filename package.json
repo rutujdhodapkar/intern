@@ -7,12 +7,16 @@
     "client": "npm run dev --prefix client",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "build:client": "cd client && npm install && npm run build",
-    "vercel-build": "cd client && npm install && npm run build"
+    "vercel-build": "cd client && npm install && npm run build",
+    "seed": "node scripts/seed-firestore.js"
   },
   "dependencies": {
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "firebase-admin": "^14.0.0"
+    "firebase-admin": "^14.0.0",
+    "google-auth-library": "^10.7.0",
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
