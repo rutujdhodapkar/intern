@@ -1,11 +1,6 @@
-import { createRequire } from 'node:module';
-
-let _require;
-try { _require = createRequire(import.meta.url); }
-catch { _require = createRequire(process.cwd() + '/'); }
-const { initializeApp, applicationDefault, cert } = _require('firebase-admin/app');
-const { getFirestore, FieldValue } = _require('firebase-admin/firestore');
-const { getAuth } = _require('firebase-admin/auth');
+import { initializeApp, applicationDefault, cert } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
 function getServiceAccount() {
   const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;

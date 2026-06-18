@@ -1,10 +1,17 @@
+import express from 'express';
+
 let app;
-try {
-  app = (await import('../server/index.js')).default;
-} catch (err) {
+
+const ready = import('../server/index.js').then(m => {
+  app = m.default;
+}).catch(err => {
   console.error('Server init error:', err.message);
-  const { default: express } = await import('express');
   app = express();
   app.all('*', (req, res) => res.status(500).json({ error: 'Server init failed', message: err.message }));
-}
-export default app;
+});
+
+export default async (req, res) => {
+  await ready;
+  app(req, res);
+  return new Promise(resolve => res.on('finish', resolve));
+};
