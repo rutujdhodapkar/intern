@@ -9,7 +9,8 @@
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "build:client": "cd client && npm install && npm run build",
     "vercel-build": "cd client && npm install && npm run build",
-    "seed": "node scripts/seed-firestore.js"
+    "seed": "node scripts/seed.js",
+    "seed:migrate": "node scripts/seed-firestore.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
