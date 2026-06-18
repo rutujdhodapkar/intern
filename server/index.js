@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import admin, { db, adminAuth } from './firebase-admin.js';
+import { db, adminAuth, FieldValue } from './firebase-admin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -178,7 +178,7 @@ app.post('/api/referral-visits', async (req, res) => {
     const refDoc = db.collection('referrals').doc(visit.referralCode);
     const snap = await refDoc.get();
     if (snap.exists) {
-      await refDoc.update({ visited: admin.firestore.FieldValue.increment(1), lastVisitedAt: visit.visitedAt, updatedAt: new Date().toISOString() });
+      await refDoc.update({ visited: FieldValue.increment(1), lastVisitedAt: visit.visitedAt, updatedAt: new Date().toISOString() });
       await docRef.update({ matched: true }); visit.matched = true;
     }
   } catch {}
@@ -348,7 +348,7 @@ app.post('/api/enrollments', async (req, res) => {
   enrollment.id = docRef.id;
   await docRef.set(enrollment);
   if (enrollment.referralCode) {
-    try { const refSnap = await db.collection('referrals').doc(enrollment.referralCode.toUpperCase()).get(); if (refSnap.exists) { await refSnap.ref.update({ selected: admin.firestore.FieldValue.increment(1), lastSelectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); } } catch {}
+    try { const refSnap = await db.collection('referrals').doc(enrollment.referralCode.toUpperCase()).get(); if (refSnap.exists) { await refSnap.ref.update({ selected: FieldValue.increment(1), lastSelectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); } } catch {}
   }
   res.status(201).json({ success: true, data: enrollment });
 });
@@ -390,7 +390,7 @@ app.post('/api/referrals/:code/contacted', async (req, res) => {
   if (!firestoreAvailable()) return res.status(503).json({ success: false, message: 'Firestore not available.' });
   const ref = db.collection('referrals').doc(req.params.code.toUpperCase());
   const snap = await ref.get();
-  if (snap.exists) await ref.update({ selected: admin.firestore.FieldValue.increment(1), lastSelectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  if (snap.exists) await ref.update({ selected: FieldValue.increment(1), lastSelectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   res.json({ success: true });
 });
 
@@ -405,7 +405,7 @@ app.post('/api/referral-users', async (req, res) => {
   if (!snap.exists) payload.firstLoginAt = new Date().toISOString();
   await docRef.set(payload, { merge: true });
   if (isNew || !snap.exists) {
-    try { await db.collection('referrals').doc(codeUpper).update({ loggedIn: admin.firestore.FieldValue.increment(1), lastLoginAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); } catch {}
+    try { await db.collection('referrals').doc(codeUpper).update({ loggedIn: FieldValue.increment(1), lastLoginAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); } catch {}
   }
   res.json({ success: true });
 });
